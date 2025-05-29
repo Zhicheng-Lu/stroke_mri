@@ -3,7 +3,7 @@ import sys, getopt
 import torch
 from datetime import datetime
 from data_reader import DataReader
-from segmentation import segmentation_train_full, segmentation_train, segmentation_test, Diceloss
+from segmentation import segmentation_train, segmentation_test, Diceloss
 # from classification import classification_train, classification_test
 # from severity import severity_train
 
@@ -34,8 +34,6 @@ def main(argv):
 	time = datetime.now().strftime('%Y-%m-%d-%H-%M-%S')
 
 	# Call the corresponding function
-	if task == 'segmentation' and (step == 'train_full' or step == 'training_full'):
-		segmentation_train_full(data_reader, device, time)
 	if task == 'segmentation' and (step == 'train' or step == 'training'):
 		segmentation_train(data_reader, device, time)
 	if task == 'segmentation' and (step == 'test' or step == 'testing'):

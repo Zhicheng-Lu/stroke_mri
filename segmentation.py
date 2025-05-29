@@ -11,96 +11,11 @@ import nibabel as nib
 
 
 
-def segmentation_train_full(data_reader, device, time):
-	# Define loss and model
-	entropy_loss_fn = nn.CrossEntropyLoss()
-	dice_loss_fn = Diceloss()
-	model = Segmentation(data_reader)
-	model.load_state_dict(torch.load("checkpoints/segmentation_model_full.pt"))
-	model = model.to(device)
-
-	# Define optimier and scaler
-	optimizer = torch.optim.RMSprop(model.parameters(), lr=1e-4)
-	scaler = torch.cuda.amp.GradScaler(enabled=amp)
-
-	losses = []
-
-	os.mkdir(f'checkpoints/segmentation_model_{time}')
-	
-	for epoch in range(data_reader.segmentation_epochs):
-		optimizer.zero_grad(set_to_none=True)
-		torch.cuda.empty_cache()
-		# Train
-		train_loss = 0.0
-
-		train_set = [patient for patient in data_reader.segmentation_folders['train'] if patient['masks'].split('/')[4] == 'SISS']
-		test_set = [patient for patient in data_reader.segmentation_folders['test'] if patient['masks'].split('/')[4] == 'SISS']
-
-		for iteration, sequence_dict in enumerate(train_set):
-			batch_sequences, masks = data_reader.read_in_batch_segmentation(sequence_dict)
-
-			batch_sequences = [torch.from_numpy(np.moveaxis(sequence, 3, 1)).to(device=device, dtype=torch.float) for sequence in batch_sequences]
-			masks = torch.from_numpy(masks)
-			masks = masks.type(torch.cuda.LongTensor)
-			masks.to(device)
-
-			model.train()
-			with torch.cuda.amp.autocast():
-				pred = model(device, batch_sequences)
-				loss = entropy_loss_fn(pred, masks) + dice_loss_fn(pred, masks)
-				train_loss += loss.item()
-			
-			print(f"Epoch {epoch+1} iteration {iteration+1} loss: {loss.item()}")
-			f = open(f'checkpoints/segmentation_model_{time}/training.txt', 'a')
-			f.write(f"Epoch {epoch+1} iteration {iteration+1} loss: {loss.item()}\n")
-			f.close()
-
-			# Backpropagation
-			scaler.scale(loss).backward()
-
-			# Gradient accumulation
-			if (iteration+1) % data_reader.batch_size == 0:
-				scaler.step(optimizer)
-				optimizer.zero_grad(set_to_none=True)
-				scaler.update()
-
-		train_loss = train_loss / len(train_set)
-
-		torch.save(model.state_dict(), f'checkpoints/segmentation_model_{time}/epoch_{str(epoch+1).zfill(3)}.pt')
-
-		# Test
-		test_loss = 0.0
-		for iteration, sequence_dict in enumerate(test_set):
-			batch_sequences, masks = data_reader.read_in_batch_segmentation(sequence_dict)
-
-			batch_sequences = [torch.from_numpy(np.moveaxis(sequence, 3, 1)).to(device=device, dtype=torch.float) for sequence in batch_sequences]
-			masks = torch.from_numpy(masks)
-			masks = masks.type(torch.cuda.LongTensor)
-			masks.to(device)
-
-			with torch.no_grad():
-				pred = model(device, batch_sequences)
-				loss = entropy_loss_fn(pred, masks) + dice_loss_fn(pred, masks)
-				test_loss += loss.item()
-
-		test_loss = test_loss / len(test_set)
-
-		losses.append((epoch, train_loss, test_loss))
-		print(losses)
-
-		for epoch, train_loss, test_loss in losses:
-			f = open(f'checkpoints/segmentation_model_{time}/training.txt', 'a')
-			f.write(f'Epoch {epoch+1}: training loss {train_loss}, test loss {test_loss}\n')
-			f.close()
-
-
-
 def segmentation_train(data_reader, device, time):
 	# Define loss and model
 	entropy_loss_fn = nn.CrossEntropyLoss()
 	dice_loss_fn = Diceloss()
 	model = Segmentation(data_reader)
-	model.load_state_dict(torch.load("checkpoints/segmentation_model_full_best.pt"))
 	model = model.to(device)
 
 	# Define optimier and scaler
@@ -122,7 +37,7 @@ def segmentation_train(data_reader, device, time):
 			torch.cuda.empty_cache()
 			batch_sequences, masks = data_reader.read_in_batch_segmentation(sequence_dict)
 
-			batch_sequences = [None if sequence is None else torch.from_numpy(np.moveaxis(sequence, 3, 1)).to(device=device, dtype=torch.float) for sequence in batch_sequences]
+			batch_sequences = {sequence_name: torch.from_numpy(np.moveaxis(sequence, 3, 1)).to(device=device, dtype=torch.float) for sequence_name, sequence in batch_sequences.items()}
 			masks = torch.from_numpy(masks)
 			masks = masks.type(torch.cuda.LongTensor)
 			masks.to(device)
@@ -130,7 +45,7 @@ def segmentation_train(data_reader, device, time):
 			model.train()
 			with torch.cuda.amp.autocast():
 				pred = model(device, batch_sequences)
-				loss = entropy_loss_fn(pred, masks) + dice_loss_fn(pred, masks)
+				loss = calculate_loss(pred, masks, entropy_loss_fn, dice_loss_fn)
 
 			print(f"Epoch {epoch+1} iteration {iteration+1} loss: {loss.item()}")
 			f = open(f'checkpoints/segmentation_model_{time}/training.txt', 'a')
@@ -154,14 +69,14 @@ def segmentation_train(data_reader, device, time):
 		for iteration, sequence_dict in enumerate(train_set):
 			batch_sequences, masks = data_reader.read_in_batch_segmentation(sequence_dict)
 
-			batch_sequences = [None if sequence is None else torch.from_numpy(np.moveaxis(sequence, 3, 1)).to(device=device, dtype=torch.float) for sequence in batch_sequences]
+			batch_sequences = {sequence_name: torch.from_numpy(np.moveaxis(sequence, 3, 1)).to(device=device, dtype=torch.float) for sequence_name, sequence in batch_sequences.items()}
 			masks = torch.from_numpy(masks)
 			masks = masks.type(torch.cuda.LongTensor)
 			masks.to(device)
 
 			with torch.no_grad():
 				pred = model(device, batch_sequences)
-				loss = entropy_loss_fn(pred, masks) + dice_loss_fn(pred, masks)
+				loss = calculate_loss(pred, masks, entropy_loss_fn, dice_loss_fn)
 				train_loss += loss.item()
 
 				dataset = (list(sequence_dict.values())[0]).split('/')[4]
@@ -184,14 +99,14 @@ def segmentation_train(data_reader, device, time):
 		for iteration, sequence_dict in enumerate(test_set):
 			batch_sequences, masks = data_reader.read_in_batch_segmentation(sequence_dict)
 
-			batch_sequences = [None if sequence is None else torch.from_numpy(np.moveaxis(sequence, 3, 1)).to(device=device, dtype=torch.float) for sequence in batch_sequences]
+			batch_sequences = {sequence_name: torch.from_numpy(np.moveaxis(sequence, 3, 1)).to(device=device, dtype=torch.float) for sequence_name, sequence in batch_sequences.items()}
 			masks = torch.from_numpy(masks)
 			masks = masks.type(torch.cuda.LongTensor)
 			masks.to(device)
 
 			with torch.no_grad():
 				pred = model(device, batch_sequences)
-				loss = entropy_loss_fn(pred, masks) + dice_loss_fn(pred, masks)
+				loss = calculate_loss(pred, masks, entropy_loss_fn, dice_loss_fn)
 				test_loss += loss.item()
 
 				dataset = (list(sequence_dict.values())[0]).split('/')[4]
@@ -218,13 +133,29 @@ def segmentation_train(data_reader, device, time):
 
 
 
+def calculate_loss(pred_dict, masks, entropy_loss_fn, dice_loss_fn):
+	idv_loss = 0.0
+	for sequence in pred_dict.values():
+		idv_loss += entropy_loss_fn(sequence, masks) + dice_loss_fn(sequence, masks)
+
+	pred = torch.stack([sequence for sequence in pred_dict.values()])
+	pred = torch.mean(pred, dim=0)
+	tot_loss = entropy_loss_fn(pred, masks) + dice_loss_fn(pred, masks)
+
+	output = (idv_loss / len(pred_dict) + tot_loss) / 2
+
+	return output
+
+
+
+
 
 def segmentation_test(data_reader, device, time, visual):
 	# Define loss function and model
 	entropy_loss_fn = nn.CrossEntropyLoss()
 	dice_loss_fn = Diceloss()
 	model = Segmentation(data_reader)
-	model.load_state_dict(torch.load("checkpoints/segmentation_model_full.pt"))
+	model.load_state_dict(torch.load("checkpoints/segmentation_model.pt"))
 	model = model.to(device)
 
 	# Define metrics and initalize empty
@@ -240,22 +171,17 @@ def segmentation_test(data_reader, device, time, visual):
 
 		dataset = (list(sequence_dict.values())[0]).split('/')[4]
 		patient = (list(sequence_dict.values())[0]).split('/')[6]
-
-		if dataset != 'SISS':
-			continue
 			
-		batch_sequences = [torch.from_numpy(np.moveaxis(sequence, 3, 1)).to(device=device, dtype=torch.float) for sequence in batch_sequences]
-		# masks = torch.from_numpy(masks)
-		# masks = masks.type(torch.cuda.LongTensor)
-		# masks.to(device)
+		batch_sequences = {sequence_name: torch.from_numpy(np.moveaxis(sequence, 3, 1)).to(device=device, dtype=torch.float) for sequence_name, sequence in batch_sequences.items()}
 
 		# Infarct level evaluation metrics
 		with torch.no_grad():
 			pred = model(device, batch_sequences)
+			pred = torch.stack([sequence for sequence in pred.values()])
+			pred = torch.mean(pred, dim=0)
 			pred_softmax = nn.functional.softmax(pred, dim=1).float()
 			pred_masks = torch.argmax(pred_softmax, dim=1)
 			pred_masks = pred_masks.detach().cpu().numpy()
-			# pred_masks = pred_softmax[:,1,:,:]
 
 			# Calculate matrices
 			if masks.shape != torch.Size([0]):
@@ -278,13 +204,16 @@ def segmentation_test(data_reader, device, time, visual):
 				cv2.imwrite(f'test/segmentation_{time}/{dataset}/{patient}/{i}_gt.jpg', masks[i]*255)
 			cv2.imwrite(f'test/segmentation_{time}/{dataset}/{patient}/{i}_predicted.jpg', pred*255)
 
-		original = glob.glob(f'data/datasets/raw/SISS2015_Testing/{patient}/*/*_Flair.*')[0]
-		output_name = original.split('.')[-2]
-		header = nib.load(original).header
-		converted_array = np.array(pred_masks, dtype=np.ushort)
-		affine = np.eye(4)
-		nifti_file = nib.Nifti1Image(converted_array, affine, header)
-		nib.save(nifti_file, f'test/segmentation_{time}/{dataset}/VSD.my_result_01.{output_name}.nii')
+		# original = glob.glob(f'data/datasets/raw/SISS2015_Testing/{patient}/*/*_Flair.*')[0]
+		# output_name = original.split('.')[-2]
+		# header = nib.load(original).header
+		# converted_array = np.array(pred_masks, dtype=np.ushort)
+		# affine = np.eye(4)
+		# nifti_file = nib.Nifti1Image(converted_array, affine, header)
+		# print(output_name)
+		# print(header)
+		# print(converted_array)
+		# nib.save(nifti_file, f'test/segmentation_{time}/{dataset}/VSD.my_result_01.{output_name}.nii')
 
 		# Add dataset to certain metrics
 		if not dataset in results['Dice']:

@@ -88,16 +88,14 @@ class DataReader():
 
 
 	def read_in_batch_segmentation(self, sequence_dict):
-		batch_sequences = []
-		sequences = ['DWI', 'FLAIR', 'T1', 'T2']
+		batch_sequences = {}
 
-		for sequence in sequences:
-			if sequence not in sequence_dict:
-				batch_sequences.append(None)
+		for sequence, path in sequence_dict.items():
+			if sequence == 'masks':
 				continue
 
 			imgs = []
-			img_paths = glob.glob(f'{sequence_dict[sequence]}/*')
+			img_paths = glob.glob(f'{path}/*')
 			img_paths = sorted(img_paths, key=lambda s: int(re.sub(r'\D', '', s.split('/')[-1]) or 0))
 			for img_path in img_paths:
 				img = cv2.imread(img_path)
@@ -111,7 +109,7 @@ class DataReader():
 				imgs.append(img / 255)
 
 			imgs = np.array(imgs)
-			batch_sequences.append(imgs)
+			batch_sequences[sequence] = imgs
 
 		masks = []
 		if 'masks' in sequence_dict:
